@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import db from './db.js';
 import multer from 'multer';
 import fs from 'fs';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,11 +22,20 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  // Setup uploads directory
+  // Setup uploads directory - Use a dedicated folder that won't sync with OneDrive
+  // Option 1: Use project-relative uploads folder (won't sync if project is outside OneDrive)
   const uploadsDir = path.join(__dirname, 'uploads');
+  
+  // Option 2: Use system temp folder (but this may be cleaned by OS)
+  // const uploadsDir = path.join(os.tmpdir(), 'book-haven-uploads');
+  
+  // Option 3: Use a folder outside OneDrive (adjust path as needed)
+  // const uploadsDir = path.join('C:', 'BookHaven', 'uploads');
+  
   if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
+    fs.mkdirSync(uploadsDir, { recursive: true });
   }
+  
   app.use('/uploads', express.static(uploadsDir));
 
   const storage = multer.diskStorage({
@@ -33,10 +43,28 @@ async function startServer() {
       cb(null, uploadsDir);
     },
     filename: (req, file, cb) => {
-      cb(null, Date.now() + '-' + file.originalname);
+      // Keep original filename but add timestamp to avoid conflicts
+      const timestamp = Date.now();
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const uniqueName = `${timestamp}-${cleanName}`;
+      cb(null, uniqueName);
     }
   });
-  const upload = multer({ storage });
+  
+  const upload = multer({ 
+    storage,
+    limits: {
+      fileSize: 50 * 1024 * 1024 // 50MB limit
+    },
+    fileFilter: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (ext === '.pdf' || ext === '.epub') {
+        cb(null, true);
+      } else {
+        cb(new Error('Only PDF and EPUB files are allowed'));
+      }
+    }
+  });
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -137,7 +165,6 @@ async function startServer() {
   app.post('/api/library', authenticateToken, (req: any, res) => {
     const { title, author, cover_url, open_library_id, status } = req.body;
     try {
-      // Find or create book
       let bookStmt = db.prepare('SELECT id FROM books WHERE open_library_id = ?');
       let book = bookStmt.get(open_library_id) as any;
       
@@ -147,14 +174,12 @@ async function startServer() {
         book = { id: info.lastInsertRowid };
       }
 
-      // Check if already in library
       const checkStmt = db.prepare('SELECT id FROM user_books WHERE user_id = ? AND book_id = ?');
       const existing = checkStmt.get(req.user.id, book.id);
       if (existing) {
         return res.status(400).json({ error: 'Already in library' });
       }
 
-      // Add to user library
       const insertUserBook = db.prepare('INSERT INTO user_books (user_id, book_id, status) VALUES (?, ?, ?)');
       insertUserBook.run(req.user.id, book.id, status || 'want_to_read');
       res.json({ success: true });
@@ -194,22 +219,47 @@ async function startServer() {
     const fileUrl = `/uploads/${req.file.filename}`;
     
     try {
-      const stmt = db.prepare('INSERT INTO uploaded_books (user_id, title, file_url) VALUES (?, ?, ?)');
-      const info = stmt.run(req.user.id, title || req.file.originalname, fileUrl);
-      res.json({ id: info.lastInsertRowid, title: title || req.file.originalname, file_url: fileUrl });
+      const stmt = db.prepare('INSERT INTO uploaded_books (user_id, title, file_url, file_size, file_name) VALUES (?, ?, ?, ?, ?)');
+      const info = stmt.run(
+        req.user.id, 
+        title || req.file.originalname.replace(/\.[^/.]+$/, ""), 
+        fileUrl,
+        req.file.size,
+        req.file.originalname
+      );
+      res.json({ 
+        id: info.lastInsertRowid, 
+        title: title || req.file.originalname.replace(/\.[^/.]+$/, ""),
+        file_url: fileUrl,
+        file_size: req.file.size,
+        file_name: req.file.originalname
+      });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
   });
 
   app.get('/api/vault', authenticateToken, (req: any, res) => {
-    const stmt = db.prepare('SELECT * FROM uploaded_books WHERE user_id = ?');
+    const stmt = db.prepare('SELECT * FROM uploaded_books WHERE user_id = ? ORDER BY created_at DESC');
     const books = stmt.all(req.user.id);
     res.json(books);
   });
 
   app.delete('/api/vault/:id', authenticateToken, (req: any, res) => {
     try {
+      // First get the file path to delete the actual file
+      const getStmt = db.prepare('SELECT file_url FROM uploaded_books WHERE id = ? AND user_id = ?');
+      const book = getStmt.get(req.params.id, req.user.id) as any;
+      
+      if (book) {
+        // Delete the actual file from uploads folder
+        const filePath = path.join(uploadsDir, path.basename(book.file_url));
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+      
+      // Delete from database
       const stmt = db.prepare('DELETE FROM uploaded_books WHERE id = ? AND user_id = ?');
       stmt.run(req.params.id, req.user.id);
       res.json({ success: true });
@@ -221,7 +271,6 @@ async function startServer() {
   app.put('/api/preferences/obsession', authenticateToken, (req: any, res) => {
     const { obsession } = req.body;
     try {
-      // Ensure row exists
       const checkStmt = db.prepare('SELECT user_id FROM user_preferences WHERE user_id = ?');
       if (!checkStmt.get(req.user.id)) {
         db.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(req.user.id);
@@ -229,6 +278,22 @@ async function startServer() {
       
       const stmt = db.prepare('UPDATE user_preferences SET current_obsession = ? WHERE user_id = ?');
       stmt.run(obsession, req.user.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/preferences/mood', authenticateToken, (req: any, res) => {
+    const { mood } = req.body;
+    try {
+      const checkStmt = db.prepare('SELECT user_id FROM user_preferences WHERE user_id = ?');
+      if (!checkStmt.get(req.user.id)) {
+        db.prepare('INSERT INTO user_preferences (user_id) VALUES (?)').run(req.user.id);
+      }
+      
+      const stmt = db.prepare('UPDATE user_preferences SET last_mood = ?, last_mood_updated = CURRENT_TIMESTAMP WHERE user_id = ?');
+      stmt.run(mood, req.user.id);
       res.json({ success: true });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -260,15 +325,12 @@ async function startServer() {
     }
   });
 
-
   // DRPA & Recommendations
   app.get('/api/recommendations/drpa', authenticateToken, async (req: any, res) => {
     try {
-      // 1. Fetch User Preferences
       const prefStmt = db.prepare('SELECT * FROM user_preferences WHERE user_id = ?');
       const prefs = prefStmt.get(req.user.id) as any;
       
-      // 2. Fetch User History (Completed & Highly Rated)
       const historyStmt = db.prepare(`
         SELECT b.title, b.author, ub.rating, ub.mood 
         FROM user_books ub
@@ -278,7 +340,6 @@ async function startServer() {
       `);
       const history = historyStmt.all(req.user.id) as any[];
 
-      // 3. Calculate Current Obsession
       let obsession = prefs?.current_obsession || 'Exploring';
       if (!prefs?.current_obsession) {
         if (history.length > 0) {
@@ -301,34 +362,85 @@ async function startServer() {
         }
       }
 
-      // 4. Calculate Reader Personality
       let personality = 'The Newcomer';
       if (history.length > 10) personality = 'The Voracious Reader';
       else if (history.length > 5) personality = 'The Steady Scholar';
       else if (prefs && prefs.reading_frequency === 'Daily') personality = 'The Daily Devourer';
       else if (prefs && prefs.preferred_mood === 'Thought-provoking') personality = 'The Deep Thinker';
 
-      // 5. Generate Recommendations (Mocked via Google Books Search)
-      // We'll use the top genre or mood to fetch a few books
-      let searchQuery = 'modern bestsellers 2020s';
-      if (prefs?.current_obsession) {
-        searchQuery = `modern ${prefs.current_obsession} books 2020s`;
+      let searchQuery = 'bestselling fiction 2024 2025';
+      
+      const obsessionMap: Record<string, string> = {
+        'Dark Romance': 'dark romance bestselling books 2024 2025 haunting adeline cat and mouse duet',
+        'Romantasy': 'romantasy fantasy romance bestsellers 2024 sarah j maas fourth wing',
+        'Dark Fantasy': 'dark fantasy grimdark books bestsellers 2024 joe abercrombie',
+        'Cyberpunk': 'cyberpunk science fiction bestsellers 2024 william gibson neuromancer',
+        'Historical Fiction': 'historical fiction award winning books 2024',
+        'Sci-Fi Thriller': 'science fiction thriller bestsellers 2024 blake crouch',
+        'Cozy Mystery': 'cozy mystery books bestsellers 2024',
+        'Epic Fantasy': 'epic fantasy bestsellers 2024 brandon sanderson',
+        'True Crime': 'true crime bestselling books 2024',
+        'Literary Fiction': 'literary fiction award winning books 2024',
+        'Psychological Thriller': 'psychological thriller bestsellers 2024 freida mcfadden',
+        'Contemporary Romance': 'contemporary romance bestsellers 2024 emily henry',
+        'Spicy Romance': 'spicy romance steamy books bestsellers 2024',
+        'Gothic Horror': 'gothic horror books bestsellers 2024',
+        'Young Adult Fantasy': 'young adult fantasy bestsellers 2024',
+        'Mystery': 'mystery thriller bestsellers 2024'
+      };
+      
+      if (prefs?.current_obsession && obsessionMap[prefs.current_obsession]) {
+        searchQuery = obsessionMap[prefs.current_obsession];
+      } else if (prefs?.current_obsession) {
+        searchQuery = `${prefs.current_obsession} bestselling books 2024`;
       } else if (prefs && prefs.favorite_genres) {
         const genres = JSON.parse(prefs.favorite_genres);
-        if (genres.length > 0) searchQuery = `modern ${genres[0]} books 2020s`;
+        if (genres.length > 0) {
+          const genreMap: Record<string, string> = {
+            'Fantasy': 'epic fantasy bestsellers 2024',
+            'Sci-Fi': 'science fiction bestsellers 2024',
+            'Romance': 'romance novels bestsellers 2024',
+            'Thriller': 'thriller suspense bestsellers 2024',
+            'Mystery': 'mystery books bestsellers 2024',
+            'Horror': 'horror books bestsellers 2024 stephen king',
+            'Non-Fiction': 'bestselling non-fiction 2024',
+            'Historical': 'historical fiction bestsellers 2024',
+            'Biography': 'bestselling biographies 2024'
+          };
+          searchQuery = genreMap[genres[0]] || `${genres[0]} bestselling books 2024`;
+        }
       }
       
-      // Fetch from Google Books
       let recommendations = [];
       try {
-        const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(searchQuery)}&maxResults=5`);
+        const response = await fetch(
+          `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(searchQuery)}&maxResults=8&orderBy=relevance`
+        );
         const data = await response.json();
-        recommendations = (data.items || []).map((item: any) => ({
-          key: item.id,
-          title: item.volumeInfo.title,
-          author: item.volumeInfo.authors ? item.volumeInfo.authors[0] : 'Unknown',
-          cover_url: item.volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || null
-        }));
+        
+        recommendations = (data.items || [])
+          .map((item: any) => ({
+            key: item.id,
+            title: item.volumeInfo.title,
+            author: item.volumeInfo.authors ? item.volumeInfo.authors[0] : 'Unknown',
+            cover_url: item.volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || null,
+            description: item.volumeInfo.description || ''
+          }))
+          .filter((book: any) => book.title && book.author !== 'Unknown' && book.title.length > 3)
+          .slice(0, 6);
+          
+        if (recommendations.length === 0) {
+          const fallbackResponse = await fetch(
+            'https://www.googleapis.com/books/v1/volumes?q=bestselling%20fiction%202024&maxResults=6'
+          );
+          const fallbackData = await fallbackResponse.json();
+          recommendations = (fallbackData.items || []).map((item: any) => ({
+            key: item.id,
+            title: item.volumeInfo.title,
+            author: item.volumeInfo.authors ? item.volumeInfo.authors[0] : 'Unknown',
+            cover_url: item.volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || null
+          }));
+        }
       } catch (e) {
         console.error('Failed to fetch recommendations', e);
       }
@@ -348,13 +460,13 @@ async function startServer() {
     }
   });
 
+  // Mood-based Recommendations
   app.get('/api/recommendations/mood', authenticateToken, async (req: any, res) => {
     try {
       const { mood } = req.query;
       let targetMood = mood;
 
       if (!targetMood) {
-        // Find most recent mood
         const stmt = db.prepare(`
           SELECT mood FROM user_books 
           WHERE user_id = ? AND mood IS NOT NULL 
@@ -370,29 +482,37 @@ async function startServer() {
         return res.json({ mood: null, recommendations: [] });
       }
 
-      // Map moods to search terms
       const moodMap: Record<string, string> = {
-        'Happy': 'feel good',
-        'Sad': 'tragedy',
-        'Excited': 'thriller',
-        'Relaxed': 'cozy',
-        'Thoughtful': 'philosophy',
-        'Adventurous': 'adventure',
-        'Romantic': 'romance',
-        'Mysterious': 'mystery'
+        '😊': 'feel good uplifting bestselling books 2024',
+        '😢': 'emotional moving literary fiction bestsellers 2024',
+        '😐': 'contemporary fiction award winning books',
+        '❤️': 'romance novels bestsellers 2024',
+        '⚡': 'thriller suspense bestselling books 2024',
+        '☕': 'cozy mystery comfort reads bestsellers',
+        '🤔': 'thought provoking philosophical fiction',
+        '🎉': 'celebratory joyful books uplifting stories',
+        '😴': 'light easy reading books',
+        '🤯': 'mind blowing science fiction fantasy',
+        '😍': 'addictive books unputdownable',
+        '🤗': 'heartwarming feel good books'
       };
 
-      const searchTerm = moodMap[targetMood as string] || targetMood;
+      const searchTerm = moodMap[targetMood as string] || `${targetMood} bestselling books 2024`;
 
-      const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(searchTerm)}&maxResults=5`);
+      const response = await fetch(
+        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(searchTerm)}&maxResults=6&orderBy=relevance`
+      );
       const data = await response.json();
       
-      const recommendations = (data.items || []).map((item: any) => ({
-        key: item.id,
-        title: item.volumeInfo.title,
-        author: item.volumeInfo.authors ? item.volumeInfo.authors[0] : 'Unknown',
-        cover_url: item.volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || null
-      }));
+      const recommendations = (data.items || [])
+        .map((item: any) => ({
+          key: item.id,
+          title: item.volumeInfo.title,
+          author: item.volumeInfo.authors ? item.volumeInfo.authors[0] : 'Unknown',
+          cover_url: item.volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || null,
+          description: item.volumeInfo.description || ''
+        }))
+        .filter((book: any) => book.title && book.author !== 'Unknown');
 
       res.json({ mood: targetMood, recommendations });
     } catch (error: any) {
@@ -407,7 +527,6 @@ async function startServer() {
     
     const TMDB_API_KEY = process.env.TMDB_API_KEY;
     if (!TMDB_API_KEY) {
-      // Return mock data if no key is provided
       return res.json({
         mock: true,
         results: [
@@ -451,6 +570,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Uploads directory: ${uploadsDir}`);
   });
 }
 
