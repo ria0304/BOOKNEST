@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BarChart3, PieChart, TrendingUp, BookOpen, Clock, Star, Brain, Sparkles, Compass, Plus, Check, Zap, Calendar, TrendingDown, Lightbulb } from 'lucide-react';
+import { BookOpen, Clock, Star, Brain, Sparkles, Compass, Plus, Check, Zap, Calendar, Lightbulb } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { Link } from 'react-router-dom';
 
-// Mood Picker Component
+// Mood Picker Component (still used for mood logging, but the recommendation section is gone)
 function MoodPicker({ onMoodSelect, currentMood }: { onMoodSelect: (mood: string) => void; currentMood?: string }) {
   const [selectedMood, setSelectedMood] = useState(currentMood || '');
   
@@ -68,9 +68,11 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
     return monthlyData.find(m => m.month === month + 1) || {
       month: month + 1,
       books_completed: 0,
+      vault_books_read: 0,
+      total_books_read: 0,
       books_added: 0,
       reading_sessions: 0,
-      reading_days: 0
+      reading_days: 0,
     };
   };
   
@@ -108,7 +110,7 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
         {monthNames.map((month, idx) => {
           const data = getMonthData(idx);
-          const intensityColor = getIntensityColor(data.books_completed);
+          const intensityColor = getIntensityColor(data.total_books_read || data.books_completed);
           const isHovered = hoveredMonth === idx;
           
           return (
@@ -122,7 +124,7 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
             >
               <h4 className="text-sm font-semibold text-white mb-2">{month}</h4>
               <div className="space-y-1">
-                <p className="text-xl font-bold text-white">{data.books_completed}</p>
+                <p className="text-xl font-bold text-white">{data.total_books_read || data.books_completed}</p>
                 <p className="text-xs text-gray-400">books read</p>
               </div>
               
@@ -131,7 +133,8 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
                 <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 z-10 w-56 bg-gray-900 rounded-lg p-3 shadow-xl border border-purple-800/50">
                   <p className="text-xs font-semibold text-white mb-2">{month} {year}</p>
                   <div className="space-y-1 text-xs">
-                    <p className="text-gray-300">✅ <span className="text-white font-medium">{data.books_completed}</span> books completed</p>
+                    <p className="text-gray-300">✅ <span className="text-white font-medium">{data.books_completed}</span> library books</p>
+                    <p className="text-gray-300">📁 <span className="text-white font-medium">{data.vault_books_read || 0}</span> vault books</p>
                     <p className="text-gray-300">➕ <span className="text-white font-medium">{data.books_added}</span> books added</p>
                     <p className="text-gray-300">📚 <span className="text-white font-medium">{data.reading_sessions}</span> reading sessions</p>
                     <p className="text-gray-300">📅 <span className="text-white font-medium">{data.reading_days}</span> days with reading</p>
@@ -144,7 +147,7 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
       </div>
       
       <p className="text-xs text-gray-500 mt-6 text-center">
-        Each card shows number of books completed per month. Hover to see detailed monthly statistics.
+        Each card shows number of books completed per month (includes both library and vault). Hover to see detailed statistics.
       </p>
     </div>
   );
@@ -153,7 +156,6 @@ function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [drpa, setDrpa] = useState<any>(null);
-  const [moodRecs, setMoodRecs] = useState<any>(null);
   const [monthlyData, setMonthlyData] = useState<any[]>([]);
   const [monthlySummary, setMonthlySummary] = useState<any>(null);
   const [aiSuggestions, setAiSuggestions] = useState<any[]>([]);
@@ -189,16 +191,14 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [analyticsData, drpaData, moodData, monthlyActivity, aiData] = await Promise.all([
+      const [analyticsData, drpaData, monthlyActivity, aiData] = await Promise.all([
         apiFetch('/api/analytics'),
         apiFetch('/api/recommendations/drpa'),
-        apiFetch('/api/recommendations/mood'),
         apiFetch(`/api/reading/monthly-books?year=${activityYear}`),
         apiFetch('/api/ai/suggestions')
       ]);
       setAnalytics(analyticsData);
       setDrpa(drpaData);
-      setMoodRecs(moodData);
       setMonthlyData(monthlyActivity?.monthlyData || []);
       setMonthlySummary(monthlyActivity?.summary || null);
       setAiSuggestions(aiData?.suggestions || []);
@@ -256,7 +256,6 @@ export default function Dashboard() {
         })
       });
       setAddedBooks(prev => new Set(prev).add(book.key));
-      
       setErrorMsg(`"${book.title}" added to your library!`);
       setTimeout(() => setErrorMsg(null), 3000);
     } catch (error: any) {
@@ -354,22 +353,49 @@ export default function Dashboard() {
           </h3>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {aiSuggestions.map((suggestion, idx) => (
-              <div key={idx} className="bg-black/40 rounded-xl p-4 border border-purple-700/50 hover:border-pink-500/70 transition-all group">
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="text-2xl">{suggestion.icon}</span>
-                  <h4 className="font-semibold text-white">{suggestion.title}</h4>
-                </div>
-                <p className="text-sm text-gray-300 mb-3">{suggestion.description}</p>
+            {aiSuggestions.map((suggestion, idx) => {
+              // Build search URL with appropriate type parameter
+              let searchQuery = '';
+              let searchType = 'all';
+              if (suggestion.type === 'author') {
+                searchQuery = suggestion.value || suggestion.title.replace('More by ', '');
+                searchType = 'author';
+              } else if (suggestion.type === 'genre') {
+                searchQuery = suggestion.value || suggestion.title.replace('More ', '').replace(' Books', '');
+                searchType = 'genre';
+              } else if (suggestion.type === 'mood') {
+                searchQuery = suggestion.value ? `${suggestion.value} books` : suggestion.title;
+                searchType = 'genre';
+              } else if (suggestion.type === 'obsession') {
+                searchQuery = suggestion.value || suggestion.title.replace('More ', '');
+                searchType = 'genre';
+              } else {
+                searchQuery = suggestion.title;
+              }
+              
+              const params = new URLSearchParams();
+              params.set('q', searchQuery);
+              if (searchType !== 'all') params.set('type', searchType);
+              const searchUrl = `/search?${params.toString()}`;
+              
+              return (
                 <Link 
-                  to={`/search?q=${encodeURIComponent(suggestion.value || suggestion.title)}`}
-                  className="text-xs text-pink-400 hover:text-pink-300 transition-colors flex items-center gap-1"
+                  key={idx}
+                  to={searchUrl}
+                  className="bg-black/40 rounded-xl p-4 border border-purple-700/50 hover:border-pink-500/70 transition-all group cursor-pointer"
                 >
-                  <span>Explore</span>
-                  <span>→</span>
+                  <div className="flex items-center gap-3 mb-3">
+                    <span className="text-2xl">{suggestion.icon}</span>
+                    <h4 className="font-semibold text-white">{suggestion.title}</h4>
+                  </div>
+                  <p className="text-sm text-gray-300 mb-3">{suggestion.description}</p>
+                  <div className="text-xs text-pink-400 group-hover:text-pink-300 transition-colors flex items-center gap-1">
+                    <span>Explore {suggestion.type === 'author' ? 'more books by this author' : suggestion.type === 'genre' ? 'books in this genre' : 'related books'}</span>
+                    <span>→</span>
+                  </div>
                 </Link>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </motion.div>
       )}
@@ -388,7 +414,11 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
           <div className="bg-black/30 rounded-xl p-3 text-center">
             <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksCompleted || 0}</p>
-            <p className="text-xs text-gray-400">Books Read</p>
+            <p className="text-xs text-gray-400">Library Books</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalVaultBooksRead || 0}</p>
+            <p className="text-xs text-gray-400">Vault Books</p>
           </div>
           <div className="bg-black/30 rounded-xl p-3 text-center">
             <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksAdded || 0}</p>
@@ -403,12 +433,10 @@ export default function Dashboard() {
             <p className="text-xs text-gray-400">Days Read</p>
           </div>
           <div className="bg-black/30 rounded-xl p-3 text-center">
-            <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksCompleted > 0 ? Math.round((monthlySummary?.totalBooksCompleted || 0) / 12) : 0}</p>
+            <p className="text-lg font-bold text-white">
+              {monthlySummary?.totalBooksCompleted > 0 ? Math.round((monthlySummary?.totalBooksCompleted || 0) / 12) : 0}
+            </p>
             <p className="text-xs text-gray-400">Avg Books/Month</p>
-          </div>
-          <div className="bg-black/30 rounded-xl p-3 text-center">
-            <p className="text-lg font-bold text-white">{monthlySummary?.totalReadingDays > 0 && monthlySummary?.totalBooksCompleted > 0 ? Math.round((monthlySummary?.totalReadingDays || 0) / (monthlySummary?.totalBooksCompleted || 1)) : 0}</p>
-            <p className="text-xs text-gray-400">Days per Book</p>
           </div>
         </div>
         
@@ -560,48 +588,6 @@ export default function Dashboard() {
           
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
             {drpa.recommendations.map((book: any) => (
-              <div key={book.key} className="group flex flex-col items-center relative">
-                <div className="w-full aspect-[2/3] bg-black/50 rounded-lg overflow-hidden border border-purple-800/30 group-hover:border-pink-500/50 transition-colors mb-3 relative">
-                  {book.cover_url ? (
-                    <img src={book.cover_url} alt={book.title} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-600">
-                      <BookOpen className="w-8 h-8" />
-                    </div>
-                  )}
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                    <button
-                      onClick={() => addToLibrary(book)}
-                      disabled={addedBooks.has(book.key)}
-                      className="bg-pink-600 hover:bg-pink-500 text-white p-2 rounded-full transform hover:scale-110 transition-all disabled:opacity-50 disabled:hover:scale-100 disabled:bg-green-600"
-                      title={addedBooks.has(book.key) ? "Added to Library" : "Add to Library"}
-                    >
-                      {addedBooks.has(book.key) ? <Check className="w-5 h-5" /> : <Plus className="w-5 h-5" />}
-                    </button>
-                  </div>
-                </div>
-                <h4 className="text-sm font-medium text-white text-center line-clamp-2 group-hover:text-pink-400 transition-colors">{book.title}</h4>
-                <p className="text-xs text-gray-400 text-center line-clamp-1">{book.author}</p>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-      )}
-
-      {moodRecs?.recommendations && moodRecs.recommendations.length > 0 && (
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.8 }}
-          className="bg-purple-950/20 border border-purple-900/50 p-8 rounded-2xl mb-12"
-        >
-          <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
-            <Sparkles className="w-5 h-5 mr-2 text-pink-400" /> Mood Matcher
-          </h3>
-          <p className="text-gray-400 mb-6 text-sm">Because you recently felt {moodRecs.mood}</p>
-          
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
-            {moodRecs.recommendations.map((book: any) => (
               <div key={book.key} className="group flex flex-col items-center relative">
                 <div className="w-full aspect-[2/3] bg-black/50 rounded-lg overflow-hidden border border-purple-800/30 group-hover:border-pink-500/50 transition-colors mb-3 relative">
                   {book.cover_url ? (
