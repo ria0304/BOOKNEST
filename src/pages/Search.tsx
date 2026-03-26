@@ -282,8 +282,7 @@ export default function Search() {
         <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400 mb-4">
           Discover New Worlds
         </h1>
-        <p className="text-gray-400">Search 6.3 million books with summaries from Goodreads</p>
-        <p className="text-xs text-gray-500 mt-2">Powered by DRPA - Dynamic Reading Preference Algorithm</p>
+        {/* Removed the two lines as requested */}
       </div>
 
       {/* Source Selector */}
