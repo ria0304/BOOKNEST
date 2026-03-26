@@ -1,102 +1,132 @@
+
 import sqlite3
 import os
 import sys
-from datasets import load_dataset
-from tqdm import tqdm
+import json
 
+# ── DB path ───────────────────────────────────────────────────────────────────
+db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bookhaven.db')
+print(f" Database: {db_path}")
 
-
-# Get the path to your bookhaven.db file
-# This script should be in the scripts folder, so we need to go up one level
-db_path = os.path.join(os.path.dirname(__file__), '..', 'bookhaven.db')
-print(f" Database will be saved to: {db_path}")
-
-# Check if database already exists
+# Safety check to avoid accidental data loss
 if os.path.exists(db_path):
-    print(" Database already exists!")
-    response = input("Do you want to overwrite it? (y/n): ")
-    if response.lower() != 'y':
-        print(" Exiting...")
-        sys.exit(0)
+    r = input("  Database exists. This will REBUILD the Goodreads table. Continue? (y/n): ")
+    if r.lower() != 'y':
+        print("Exiting."); sys.exit(0)
 
-print("\n Loading Goodreads dataset from Hugging Face...")
-print("   (This may take 10-20 minutes on first run as it downloads ~2GB of data)")
-
-# Load the dataset
+# ── Load dataset ──────────────────────────────────────────────────────────────
+print("\n Loading BrightData/Goodreads-Books dataset...")
 try:
+    from datasets import load_dataset
     ds = load_dataset("BrightData/Goodreads-Books")
-    print(f" Dataset loaded successfully!")
-    print(f"   Total books: {len(ds['train']):,}")
-except Exception as e:
-    print(f" Failed to load dataset: {e}")
-    print("   Make sure you have internet connection and enough disk space (~3GB)")
+    train = ds["train"]
+    print(f" {len(train):,} books loaded from cache.")
+except ImportError:
+    print(" Error: 'datasets' library not found. Run 'pip install datasets'.")
     sys.exit(1)
 
-# Connect to SQLite database
-print("\n💾 Connecting to SQLite database...")
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def clean_str(val, max_len=None):
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s in ("", "None", "null", "nan"):
+        return None
+    if max_len and len(s) > max_len:
+        s = s[:max_len]
+    return s
+
+def parse_author(val):
+    """Goodreads authors are often stored as JSON strings like ['Author Name']"""
+    s = clean_str(val)
+    if not s:
+        return "Unknown Author"
+    if s.startswith("["):
+        try:
+            lst = json.loads(s)
+            if isinstance(lst, list):
+                return clean_str(", ".join(str(x).strip() for x in lst if x), 300)
+        except:
+            # Fallback if JSON parsing fails
+            return s.strip("[]").replace('"', '').replace("'", "").strip()
+    return clean_str(s, 300)
+
+# ── Database Setup ────────────────────────────────────────────────────────────
 conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
+cur  = conn.cursor()
 
-# Create the table
-print(" Creating table structure...")
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS goodreads_books (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT,
-    author TEXT,
-    star_rating REAL,
-    num_ratings INTEGER,
-    num_reviews INTEGER,
-    summary TEXT,
-    genres TEXT,
-    first_published TEXT,
-    goodreads_url TEXT
-)
-''')
+print("Cleaning old data...")
+cur.execute("DROP TABLE IF EXISTS goodreads_books")
 
-# Create indexes for fast search
-print(" Creating indexes for fast search...")
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_title ON goodreads_books(title)')
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_author ON goodreads_books(author)')
-cursor.execute('CREATE INDEX IF NOT EXISTS idx_genres ON goodreads_books(genres)')
+cur.execute('''
+CREATE TABLE goodreads_books (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    title            TEXT,
+    author           TEXT,
+    star_rating      REAL,
+    num_ratings      INTEGER,
+    num_reviews      INTEGER,
+    summary          TEXT,
+    genres           TEXT,
+    first_published  TEXT,
+    goodreads_url    TEXT
+)''')
 
-# Insert data in batches
-print("\n📥 Inserting books into database...")
-print("   This may take 5-10 minutes...")
+# Create indexes to ensure the 'Discover' search is fast
+cur.execute('CREATE INDEX idx_goodreads_title ON goodreads_books(title)')
+cur.execute('CREATE INDEX idx_goodreads_author ON goodreads_books(author)')
+conn.commit()
 
-batch_size = 5000
-total = len(ds['train'])
-inserted = 0
+# ── Import Logic ──────────────────────────────────────────────────────────────
+BATCH_SIZE = 5000
+total = len(train)
+INSERT = '''
+    INSERT INTO goodreads_books 
+    (title, author, star_rating, num_ratings, num_reviews, summary, genres, first_published, goodreads_url) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+'''
 
-# Progress bar
-with tqdm(total=total, desc="Importing books", unit="books") as pbar:
-    for i in range(0, total, batch_size):
-        batch = ds['train'][i:i+batch_size]
-        
-        for item in batch:
-            try:
-                cursor.execute('''
-                INSERT OR REPLACE INTO goodreads_books 
-                (title, author, star_rating, num_ratings, num_reviews, summary, genres, first_published, goodreads_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    item.get('title', '')[:500] if item.get('title') else None,
-                    item.get('author', '')[:200] if item.get('author') else None,
-                    float(item.get('star_rating', 0)) if item.get('star_rating') else None,
-                    int(item.get('num_ratings', 0)) if item.get('num_ratings') else None,
-                    int(item.get('num_reviews', 0)) if item.get('num_reviews') else None,
-                    item.get('summary', '')[:5000] if item.get('summary') else None,
-                    item.get('genres', '')[:500] if item.get('genres') else None,
-                    item.get('first_published', '')[:50] if item.get('first_published') else None,
-                    item.get('url', '')[:500] if item.get('url') else None
-                ))
-                inserted += 1
-            except Exception as e:
-                print(f"\n  Error inserting book: {e}")
-                continue
-        
-        conn.commit()
-        pbar.update(len(batch))
+print(f"\n Starting import of {total:,} books...")
 
+done = 0
+errors = 0
+
+for start in range(0, total, BATCH_SIZE):
+    end = min(start + BATCH_SIZE, total)
+    batch = train[start:end]
+    rows = []
+    
+    for i in range(len(batch["name"])):
+        try:
+            # Map 'name' from dataset to 'title' in DB
+            title   = clean_str(batch["name"][i], 500)
+            author  = parse_author(batch["author"][i])
+            rating  = batch["star_rating"][i]
+            n_rat   = batch["num_ratings"][i]
+            n_rev   = batch["num_reviews"][i]
+            summary = clean_str(batch["summary"][i], 5000)
+            genres  = clean_str(batch["genres"][i], 500)
+            pub     = clean_str(batch["first_published"][i], 50)
+            url     = clean_str(batch["url"][i], 500)
+
+            rows.append((title, author, rating, n_rat, n_rev, summary, genres, pub, url))
+            done += 1
+        except Exception:
+            errors += 1
+
+    cur.executemany(INSERT, rows)
+    conn.commit()
+
+    if done % 100000 == 0 or done == total:
+        print(f"    Progress: {done:,} / {total:,} books inserted...")
+
+# ── Verification ──────────────────────────────────────────────────────────────
+final_count = cur.execute("SELECT COUNT(*) FROM goodreads_books").fetchone()[0]
+print("\n" + "="*40)
+print(f" IMPORT COMPLETE")
+print(f"   Total Rows: {final_count:,}")
+print(f"   Errors:     {errors:,}")
+print("="*40)
 
 conn.close()
+print("\n You can now restart your server and search in the Discover tab!")
