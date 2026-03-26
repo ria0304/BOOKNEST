@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Search as SearchIcon, Plus, Check, ExternalLink, BookOpen, X, Star, Info } from 'lucide-react';
+import { Search as SearchIcon, Plus, Check, ExternalLink, BookOpen, X, Star, Info, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../lib/api';
 
 interface BookResult {
   key: string;
   title: string;
+  author?: string;
   author_name?: string[];
   cover_url?: string;
   first_sentence?: string[];
@@ -25,17 +26,13 @@ interface BookResult {
 const stripHtml = (html: string): string => {
   if (!html) return '';
   
-  // First, replace <br> and <br/> with newlines
   let text = html.replace(/<br\s*\/?>/gi, '\n');
-  
-  // Replace </p> and <p> with newlines
   text = text.replace(/<\/p>/gi, '\n');
   text = text.replace(/<p[^>]*>/gi, '');
-  
-  // Remove all other HTML tags
+  text = text.replace(/<\/div>/gi, '\n');
+  text = text.replace(/<div[^>]*>/gi, '');
   text = text.replace(/<[^>]*>/g, '');
   
-  // Decode HTML entities
   text = text
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, '&')
@@ -43,12 +40,15 @@ const stripHtml = (html: string): string => {
     .replace(/&gt;/g, '>')
     .replace(/&#39;/g, "'")
     .replace(/&rsquo;/g, "'")
+    .replace(/&lsquo;/g, "'")
+    .replace(/&rdquo;/g, '"')
+    .replace(/&ldquo;/g, '"')
     .replace(/&mdash;/g, '—')
     .replace(/&ndash;/g, '–')
     .replace(/&hellip;/g, '...');
   
-  // Clean up extra whitespace and newlines
   text = text.replace(/\n\s*\n/g, '\n\n');
+  text = text.replace(/[ \t]+/g, ' ');
   text = text.trim();
   
   return text;
@@ -64,45 +64,24 @@ const isEnglishText = (text: string): boolean => {
   return ratio > 0.6;
 };
 
-// Function to check if text is likely German or other non-English
+// Function to check if text is likely non-English
 const isNonEnglish = (text: string): boolean => {
   if (!text) return true;
-  const germanPatterns = /[äöüßÄÖÜ]/;
-  const frenchPatterns = /[éèêëàâçîïôûùÿÉÈÊËÀÂÇÎÏÔÛÙŸ]/;
-  const spanishPatterns = /[áéíóúñÁÉÍÓÚÑ]/;
-  
-  if (germanPatterns.test(text)) return true;
-  if (frenchPatterns.test(text)) return true;
-  if (spanishPatterns.test(text)) return true;
-  
-  return false;
-};
-
-// Function to clean and get full description
-const getFullDescription = (volumeInfo: any): string => {
-  let description = '';
-  
-  if (volumeInfo.description) {
-    description = volumeInfo.description;
-  } else if (volumeInfo.subtitle) {
-    description = volumeInfo.subtitle;
-  }
-  
-  // Strip HTML tags
-  description = stripHtml(description);
-  
-  return description;
+  const nonEnglishPatterns = /[äöüßÄÖÜéèêëàâçîïôûùÿÉÈÊËÀÂÇÎÏÔÛÙŸáéíóúñÁÉÍÓÚÑа-яА-Я\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/;
+  return nonEnglishPatterns.test(text);
 };
 
 export default function Search() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<BookResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchAttempted, setSearchAttempted] = useState(false);
   const [addedBooks, setAddedBooks] = useState<Set<string>>(new Set());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [selectedBook, setSelectedBook] = useState<BookResult | null>(null);
   const [bookDetails, setBookDetails] = useState<any>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [activeSource, setActiveSource] = useState<string>('goodreads');
 
   const searchBooks = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,89 +89,114 @@ export default function Search() {
     
     setLoading(true);
     setErrorMsg(null);
+    setSearchAttempted(true);
+    setResults([]);
+    
     try {
-      const googleRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=15&orderBy=relevance`);
-      const googleData = await googleRes.json();
+      let allResults: BookResult[] = [];
       
-      let combinedResults: BookResult[] = [];
-
-      if (googleData.items) {
-        const mapped = googleData.items.map((item: any) => {
-          const volumeInfo = item.volumeInfo;
-          let description = getFullDescription(volumeInfo);
+      // PRIORITY 1: Goodreads
+      if (activeSource === 'goodreads' || activeSource === 'all') {
+        try {
+          console.log(`Searching Goodreads for: ${query}`);
+          const goodreadsResponse = await apiFetch(`/api/books/goodreads-search?q=${encodeURIComponent(query)}&limit=20`);
           
-          if (description && isNonEnglish(description)) {
-            description = '';
+          console.log('Goodreads response:', goodreadsResponse);
+          
+          if (goodreadsResponse.success && goodreadsResponse.results && goodreadsResponse.results.length > 0) {
+            const cleanedResults = goodreadsResponse.results.map((book: BookResult) => {
+              let description = book.description || '';
+              if (description && description !== 'No summary available') {
+                description = stripHtml(description);
+                if (isNonEnglish(description) || !isEnglishText(description)) {
+                  description = '';
+                }
+              }
+              return {
+                ...book,
+                description: description || (book.source === 'Goodreads' ? 'No summary available' : ''),
+                author_name: book.author_name || [book.author || 'Unknown'],
+                author: book.author || (book.author_name ? book.author_name[0] : 'Unknown'),
+                source: 'Goodreads',
+                rating: book.rating,
+                ratings_count: book.ratings_count
+              };
+            });
+            allResults = [...allResults, ...cleanedResults];
+            console.log(`Found ${cleanedResults.length} Goodreads results`);
+          } else {
+            console.log('No Goodreads results or error:', goodreadsResponse.message);
           }
-          
-          if ((!description || description.length < 50) && volumeInfo.searchInfo?.textSnippet) {
-            let snippet = volumeInfo.searchInfo.textSnippet;
-            snippet = stripHtml(snippet);
-            if (!isNonEnglish(snippet)) {
-              description = snippet;
-            }
-          }
-          
-          return {
-            key: item.id,
-            title: volumeInfo.title,
-            author_name: volumeInfo.authors || ['Unknown Author'],
-            cover_url: volumeInfo.imageLinks?.thumbnail?.replace('http:', 'https:') || '',
-            description: description,
-            rating: volumeInfo.averageRating,
-            ratings_count: volumeInfo.ratingsCount,
-            published_date: volumeInfo.publishedDate,
-            page_count: volumeInfo.pageCount,
-            categories: volumeInfo.categories,
-            preview_link: volumeInfo.previewLink,
-            read_link: volumeInfo.infoLink,
-            source: 'Google Books',
-            url: `https://books.google.com/books?id=${item.id}`
-          };
-        });
-        combinedResults = [...combinedResults, ...mapped];
+        } catch (error) {
+          console.error('Goodreads search error:', error);
+          setErrorMsg('Goodreads search failed. Trying other sources...');
+        }
       }
       
-      try {
-        const openLibRes = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=8`);
-        const openLibData = await openLibRes.json();
-        
-        const openLibMapped = (openLibData.docs || []).map((doc: any) => {
-          let firstSentence = doc.first_sentence?.[0] || '';
-          if (firstSentence) {
-            firstSentence = stripHtml(firstSentence);
-            if (isNonEnglish(firstSentence) || !isEnglishText(firstSentence)) {
-              firstSentence = '';
+      // PRIORITY 2: Google Books
+      if ((allResults.length === 0 || activeSource === 'all') && (activeSource === 'google' || activeSource === 'all')) {
+        try {
+          console.log(`Searching Google Books for: ${query}`);
+          const googleResponse = await apiFetch(`/api/books/search?q=${encodeURIComponent(query)}&source=google`);
+          
+          if (googleResponse.success && googleResponse.results && googleResponse.results.length > 0) {
+            const googleResults = googleResponse.results.map((book: BookResult) => ({
+              ...book,
+              description: book.description ? stripHtml(book.description) : '',
+              author_name: book.author_name || [book.author || 'Unknown'],
+              source: 'Google Books'
+            }));
+            
+            if (allResults.length === 0) {
+              allResults = [...allResults, ...googleResults];
+              console.log(`Found ${googleResults.length} Google Books results`);
             }
           }
-          return {
-            key: doc.key,
-            title: doc.title,
-            author_name: doc.author_name || ['Unknown Author'],
-            cover_url: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : '',
-            first_sentence: firstSentence ? [firstSentence] : undefined,
-            published_date: doc.first_publish_year ? `${doc.first_publish_year}` : undefined,
-            source: 'Open Library',
-            url: `https://openlibrary.org${doc.key}`
-          };
-        });
-        combinedResults = [...combinedResults, ...openLibMapped];
-      } catch (e) {
-        console.error('Open Library fetch failed', e);
+        } catch (error) {
+          console.error('Google Books error:', error);
+        }
       }
       
+      // PRIORITY 3: Open Library
+      if (allResults.length === 0 && (activeSource === 'openlibrary' || activeSource === 'all')) {
+        try {
+          console.log(`Searching Open Library for: ${query}`);
+          const openLibResponse = await apiFetch(`/api/books/search?q=${encodeURIComponent(query)}&source=openlibrary`);
+          
+          if (openLibResponse.success && openLibResponse.results && openLibResponse.results.length > 0) {
+            const openLibResults = openLibResponse.results.map((book: BookResult) => ({
+              ...book,
+              description: book.description ? stripHtml(book.description) : '',
+              author_name: book.author_name || [book.author || 'Unknown'],
+              source: 'Open Library'
+            }));
+            allResults = [...allResults, ...openLibResults];
+            console.log(`Found ${openLibResults.length} Open Library results`);
+          }
+        } catch (error) {
+          console.error('Open Library error:', error);
+        }
+      }
+      
+      // Deduplicate by title
       const seenTitles = new Set();
-      const deduplicated = combinedResults.filter(book => {
-        const titleLower = book.title.toLowerCase();
+      const deduplicated = allResults.filter(book => {
+        const titleLower = book.title?.toLowerCase() || '';
         if (seenTitles.has(titleLower)) return false;
         seenTitles.add(titleLower);
         return true;
       });
-
+      
       setResults(deduplicated);
+      
+      if (deduplicated.length === 0 && searchAttempted) {
+        setErrorMsg('No books found. Try a different search term.');
+        setTimeout(() => setErrorMsg(null), 3000);
+      }
     } catch (error) {
-      console.error('Search failed', error);
-      setResults([]);
+      console.error('Search failed:', error);
+      setErrorMsg('Search failed. Please try again.');
+      setTimeout(() => setErrorMsg(null), 3000);
     } finally {
       setLoading(false);
     }
@@ -203,54 +207,30 @@ export default function Search() {
     setSelectedBook(book);
     try {
       if (book.key && book.source === 'Google Books') {
-        const response = await fetch(`https://www.googleapis.com/books/v1/volumes/${book.key}`);
-        const data = await response.json();
-        if (data.volumeInfo) {
-          let fullDescription = getFullDescription(data.volumeInfo);
+        const response = await apiFetch(`/api/books/details/${book.key}?source=google`);
+        if (response.success && response.details) {
+          let fullDescription = response.details.volumeInfo.description || book.description || '';
+          fullDescription = stripHtml(fullDescription);
           
-          if (!fullDescription || fullDescription.length < 100) {
-            if (data.searchInfo?.textSnippet) {
-              let snippet = data.searchInfo.textSnippet;
-              snippet = stripHtml(snippet);
-              if (!isNonEnglish(snippet)) {
-                fullDescription = snippet;
-              }
-            }
+          if (fullDescription && (isNonEnglish(fullDescription) || !isEnglishText(fullDescription))) {
+            fullDescription = '';
           }
           
           setBookDetails({
             ...book,
-            description: fullDescription || book.description || 'No description available.',
-            rating: data.volumeInfo.averageRating || book.rating,
-            ratings_count: data.volumeInfo.ratingsCount || book.ratings_count,
-            published_date: data.volumeInfo.publishedDate || book.published_date,
-            page_count: data.volumeInfo.pageCount,
-            categories: data.volumeInfo.categories,
-            preview_link: data.volumeInfo.previewLink,
-            read_link: data.volumeInfo.infoLink,
-            publisher: data.volumeInfo.publisher
+            description: fullDescription || 'No description available.',
+            rating: response.details.volumeInfo.averageRating || book.rating,
+            ratings_count: response.details.volumeInfo.ratingsCount || book.ratings_count,
+            published_date: response.details.volumeInfo.publishedDate || book.published_date,
+            page_count: response.details.volumeInfo.pageCount,
+            categories: response.details.volumeInfo.categories,
+            preview_link: response.details.volumeInfo.previewLink,
+            read_link: response.details.volumeInfo.infoLink,
+            publisher: response.details.volumeInfo.publisher
           });
         } else {
           setBookDetails(book);
         }
-      } else if (book.key && book.source === 'Open Library') {
-        const workId = book.key.replace('/works/', '');
-        const response = await fetch(`https://openlibrary.org/works/${workId}.json`);
-        const data = await response.json();
-        let description = '';
-        if (data.description) {
-          if (typeof data.description === 'string') {
-            description = stripHtml(data.description);
-          } else if (data.description.value) {
-            description = stripHtml(data.description.value);
-          }
-        }
-        setBookDetails({
-          ...book,
-          description: description || 'No description available.',
-          published_date: data.created?.value ? new Date(data.created.value).getFullYear() : book.published_date,
-          categories: data.subjects ? data.subjects.slice(0, 5) : []
-        });
       } else {
         setBookDetails(book);
       }
@@ -269,13 +249,16 @@ export default function Search() {
         method: 'POST',
         body: JSON.stringify({
           title: book.title,
-          author: book.author_name?.[0] || 'Unknown Author',
+          author: book.author_name?.[0] || book.author || 'Unknown Author',
           cover_url: book.cover_url || '',
           open_library_id: book.key,
           status: 'want_to_read'
         })
       });
       setAddedBooks(prev => new Set(prev).add(book.key));
+      
+      setErrorMsg(`"${book.title}" added to your library!`);
+      setTimeout(() => setErrorMsg(null), 3000);
     } catch (error: any) {
       console.error('Failed to add book', error);
       if (error.message.includes('Already in library')) {
@@ -283,8 +266,15 @@ export default function Search() {
       } else {
         setErrorMsg('Failed to add book. Please try again.');
       }
+      setTimeout(() => setErrorMsg(null), 3000);
     }
   };
+
+  const sources = [
+    { id: 'goodreads', label: 'Goodreads', icon: '⭐', description: '6.3M+ books with summaries' },
+    { id: 'google', label: 'Google Books', icon: '📚', description: 'Preview available' },
+    { id: 'openlibrary', label: 'Open Library', icon: '📖', description: 'Free public domain' }
+  ];
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -292,11 +282,38 @@ export default function Search() {
         <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400 mb-4">
           Discover New Worlds
         </h1>
-        <p className="text-gray-400">Search millions of books via Google Books & Open Library</p>
+        <p className="text-gray-400">Search 6.3 million books with summaries from Goodreads</p>
+        <p className="text-xs text-gray-500 mt-2">Powered by DRPA - Dynamic Reading Preference Algorithm</p>
+      </div>
+
+      {/* Source Selector */}
+      <div className="flex justify-center gap-3 mb-6 flex-wrap">
+        {sources.map(source => (
+          <button
+            key={source.id}
+            onClick={() => setActiveSource(source.id)}
+            className={`px-5 py-2 rounded-xl text-sm font-medium transition-all ${
+              activeSource === source.id
+                ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-pink-500/25'
+                : 'bg-purple-900/30 text-gray-400 hover:text-white hover:bg-purple-900/50'
+            }`}
+          >
+            <span className="mr-1">{source.icon}</span>
+            {source.label}
+            <span className="ml-1 text-xs opacity-75 hidden md:inline">{source.description}</span>
+          </button>
+        ))}
       </div>
 
       {errorMsg && (
-        <div className="max-w-2xl mx-auto mb-6 bg-red-900/50 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg text-center">
+        <div className={`max-w-2xl mx-auto mb-6 px-4 py-3 rounded-lg text-center ${
+          errorMsg.includes('added') 
+            ? 'bg-green-900/50 border border-green-500/50 text-green-200'
+            : errorMsg.includes('No books found')
+            ? 'bg-yellow-900/50 border border-yellow-500/50 text-yellow-200'
+            : 'bg-red-900/50 border border-red-500/50 text-red-200'
+        }`}>
+          {errorMsg.includes('No books found') && <AlertCircle className="w-4 h-4 inline mr-2" />}
           {errorMsg}
         </div>
       )}
@@ -314,12 +331,26 @@ export default function Search() {
           <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
           <button 
             type="submit"
-            className="absolute right-2 top-1/2 -translate-y-1/2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full font-medium hover:from-purple-500 hover:to-pink-500 transition-all"
+            disabled={loading}
+            className="absolute right-2 top-1/2 -translate-y-1/2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full font-medium hover:from-purple-500 hover:to-pink-500 transition-all disabled:opacity-50"
           >
             {loading ? 'Searching...' : 'Search'}
           </button>
         </div>
       </form>
+
+      {loading && (
+        <div className="flex justify-center py-20">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-pink-500"></div>
+        </div>
+      )}
+
+      {!loading && searchAttempted && results.length === 0 && (
+        <div className="text-center py-20">
+          <p className="text-gray-400">No books found. Try a different search term or source.</p>
+          <p className="text-xs text-gray-500 mt-2">Tip: Try searching for popular books like "Harry Potter" or "The Great Gatsby"</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
         {results.map((book, idx) => (
@@ -327,7 +358,7 @@ export default function Search() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            key={book.key}
+            key={`${book.source}-${book.key}`}
             className="bg-purple-950/20 border border-purple-900/50 rounded-xl overflow-hidden hover:border-pink-500/50 transition-all group flex flex-col cursor-pointer"
             onClick={() => fetchBookDetails(book)}
           >
@@ -338,6 +369,9 @@ export default function Search() {
                   alt={book.title}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = '';
+                  }}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-purple-700">
@@ -345,6 +379,14 @@ export default function Search() {
                 </div>
               )}
               
+              {/* Source Badge */}
+              <div className="absolute top-3 right-3 bg-black/70 backdrop-blur-sm rounded-full px-2 py-1">
+                <span className="text-xs text-white">
+                  {book.source === 'Goodreads' ? '⭐' : book.source === 'Google Books' ? '📚' : '📖'}
+                </span>
+              </div>
+              
+              {/* Rating Badge */}
               {book.rating && (
                 <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-sm rounded-full px-2 py-1 flex items-center space-x-1">
                   <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
@@ -360,7 +402,7 @@ export default function Search() {
                   onClick={(e) => e.stopPropagation()}
                   className="text-xs text-white flex items-center hover:text-pink-400 transition-colors"
                 >
-                  <ExternalLink className="w-3 h-3 mr-1" /> View on {book.source || 'Google Books'}
+                  <ExternalLink className="w-3 h-3 mr-1" /> View
                 </a>
                 <button
                   onClick={(e) => {
@@ -377,7 +419,7 @@ export default function Search() {
             <div className="p-4 flex-1 flex flex-col">
               <h3 className="font-semibold text-white line-clamp-2 mb-1">{book.title}</h3>
               <p className="text-sm text-gray-400 line-clamp-1 mb-2">
-                {book.author_name?.[0] || 'Unknown Author'}
+                {book.author_name?.[0] || book.author || 'Unknown Author'}
               </p>
               
               {book.published_date && (
@@ -386,9 +428,14 @@ export default function Search() {
                 </p>
               )}
               
-              {book.description && (
+              {book.description && book.description !== 'No summary available' && (
                 <p className="text-xs text-gray-500 line-clamp-3 mb-4 flex-1">
                   {book.description.length > 120 ? `${book.description.substring(0, 120)}...` : book.description}
+                </p>
+              )}
+              {book.source === 'Goodreads' && (!book.description || book.description === 'No summary available') && (
+                <p className="text-xs text-amber-500 italic line-clamp-2 mb-4 flex-1">
+                  ⭐ Goodreads summary available
                 </p>
               )}
               {!book.description && book.first_sentence && book.first_sentence[0] && (
@@ -396,7 +443,7 @@ export default function Search() {
                   "{book.first_sentence[0]}"
                 </p>
               )}
-              {!book.description && !book.first_sentence && (
+              {!book.description && !book.first_sentence && book.source !== 'Goodreads' && (
                 <div className="flex-1 mb-4"></div>
               )}
               
@@ -448,152 +495,147 @@ export default function Search() {
                   <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-pink-500"></div>
                 </div>
               ) : bookDetails && (
-                <>
-                  <div className="relative">
-                    <button
-                      onClick={() => {
-                        setSelectedBook(null);
-                        setBookDetails(null);
-                      }}
-                      className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
-                    >
-                      <X className="w-5 h-5 text-white" />
-                    </button>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6">
-                      <div className="md:col-span-1">
-                        <div className="aspect-[2/3] rounded-xl overflow-hidden border border-purple-900/50 shadow-xl">
-                          {bookDetails.cover_url ? (
-                            <img 
-                              src={bookDetails.cover_url.replace('zoom=1', 'zoom=2')} 
-                              alt={bookDetails.title}
-                              className="w-full h-full object-cover"
-                              referrerPolicy="no-referrer"
-                            />
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      setSelectedBook(null);
+                      setBookDetails(null);
+                    }}
+                    className="absolute top-4 right-4 z-10 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
+                  >
+                    <X className="w-5 h-5 text-white" />
+                  </button>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6">
+                    <div className="md:col-span-1">
+                      <div className="aspect-[2/3] rounded-xl overflow-hidden border border-purple-900/50 shadow-xl">
+                        {bookDetails.cover_url ? (
+                          <img 
+                            src={bookDetails.cover_url.replace('zoom=1', 'zoom=2')} 
+                            alt={bookDetails.title}
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-purple-900/30 flex items-center justify-center">
+                            <BookOpen className="w-16 h-16 text-purple-600" />
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="mt-4 space-y-2">
+                        <button
+                          onClick={() => addToLibrary(bookDetails)}
+                          disabled={addedBooks.has(bookDetails.key)}
+                          className={`w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium transition-all ${
+                            addedBooks.has(bookDetails.key)
+                              ? 'bg-green-900/30 text-green-400 border border-green-500/30'
+                              : 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-500 hover:to-pink-500'
+                          }`}
+                        >
+                          {addedBooks.has(bookDetails.key) ? (
+                            <><Check className="w-4 h-4" /> <span>Added to Library</span></>
                           ) : (
-                            <div className="w-full h-full bg-purple-900/30 flex items-center justify-center">
-                              <BookOpen className="w-16 h-16 text-purple-600" />
-                            </div>
+                            <><Plus className="w-4 h-4" /> <span>Add to My Library</span></>
+                          )}
+                        </button>
+                        
+                        {bookDetails.preview_link && (
+                          <a
+                            href={bookDetails.preview_link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium bg-blue-900/30 text-blue-400 border border-blue-500/30 hover:bg-blue-800/50 transition-colors"
+                          >
+                            <BookOpen className="w-4 h-4" />
+                            <span>Preview Book</span>
+                          </a>
+                        )}
+                        
+                        {bookDetails.url && (
+                          <a
+                            href={bookDetails.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium bg-amber-900/30 text-amber-400 border border-amber-500/30 hover:bg-amber-800/50 transition-colors"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                            <span>View on {bookDetails.source || 'Source'}</span>
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="md:col-span-2 space-y-4">
+                      <h2 className="text-2xl md:text-3xl font-bold text-white">{bookDetails.title}</h2>
+                      <p className="text-lg text-gray-400">{bookDetails.author_name?.[0] || bookDetails.author || 'Unknown Author'}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs bg-purple-900/50 px-2 py-1 rounded-full">
+                          {bookDetails.source || 'Unknown Source'}
+                        </span>
+                      </div>
+                      
+                      {bookDetails.rating && (
+                        <div className="flex items-center space-x-4 py-2">
+                          <div className="flex items-center space-x-1">
+                            <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
+                            <span className="text-xl font-bold text-white">{bookDetails.rating.toFixed(1)}</span>
+                            <span className="text-sm text-gray-400">/5</span>
+                          </div>
+                          {bookDetails.ratings_count && (
+                            <span className="text-sm text-gray-400">({bookDetails.ratings_count.toLocaleString()} ratings)</span>
                           )}
                         </div>
-                        
-                        <div className="mt-4 space-y-2">
-                          <button
-                            onClick={() => addToLibrary(bookDetails)}
-                            disabled={addedBooks.has(bookDetails.key)}
-                            className={`w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium transition-all ${
-                              addedBooks.has(bookDetails.key)
-                                ? 'bg-green-900/30 text-green-400 border border-green-500/30'
-                                : 'bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-500 hover:to-pink-500'
-                            }`}
-                          >
-                            {addedBooks.has(bookDetails.key) ? (
-                              <><Check className="w-4 h-4" /> <span>Added to Library</span></>
-                            ) : (
-                              <><Plus className="w-4 h-4" /> <span>Add to My Library</span></>
-                            )}
-                          </button>
-                          
-                          {bookDetails.preview_link && (
-                            <a
-                              href={bookDetails.preview_link}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium bg-blue-900/30 text-blue-400 border border-blue-500/30 hover:bg-blue-800/50 transition-colors"
-                            >
-                              <BookOpen className="w-4 h-4" />
-                              <span>Preview Book</span>
-                            </a>
-                          )}
-                          
-                          {bookDetails.read_link && (
-                            <a
-                              href={bookDetails.read_link}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="w-full py-2 rounded-lg flex items-center justify-center space-x-2 text-sm font-medium bg-amber-900/30 text-amber-400 border border-amber-500/30 hover:bg-amber-800/50 transition-colors"
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                              <span>More Info</span>
-                            </a>
+                      )}
+                      
+                      <div className="flex flex-wrap gap-3 text-sm">
+                        {bookDetails.published_date && (
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
+                            📅 {bookDetails.published_date.substring(0, 4)}
+                          </span>
+                        )}
+                        {bookDetails.page_count && (
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
+                            📄 {bookDetails.page_count} pages
+                          </span>
+                        )}
+                        {bookDetails.publisher && (
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
+                            🏢 {bookDetails.publisher}
+                          </span>
+                        )}
+                      </div>
+                      
+                      {bookDetails.categories && bookDetails.categories.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-400 mb-2">Genres</h3>
+                          <div className="flex flex-wrap gap-2">
+                            {bookDetails.categories.slice(0, 5).map((cat: string, idx: number) => (
+                              <span key={idx} className="text-xs bg-pink-500/20 text-pink-300 px-2 py-1 rounded-full">
+                                {cat}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-400 mb-2">Summary</h3>
+                        <div className="text-gray-300 leading-relaxed text-sm whitespace-pre-wrap max-h-96 overflow-y-auto pr-2">
+                          {bookDetails.description && bookDetails.description !== 'No description available.' && bookDetails.description !== 'No summary available' ? (
+                            <p>{bookDetails.description}</p>
+                          ) : (
+                            <p className="text-gray-500 italic">No summary available for this book.</p>
                           )}
                         </div>
                       </div>
                       
-                      <div className="md:col-span-2 space-y-4">
-                        <h2 className="text-2xl md:text-3xl font-bold text-white">{bookDetails.title}</h2>
-                        <p className="text-lg text-gray-400">{bookDetails.author_name?.[0] || 'Unknown Author'}</p>
-                        
-                        {bookDetails.rating && (
-                          <div className="flex items-center space-x-4 py-2">
-                            <div className="flex items-center space-x-1">
-                              <Star className="w-5 h-5 text-amber-400 fill-amber-400" />
-                              <span className="text-xl font-bold text-white">{bookDetails.rating.toFixed(1)}</span>
-                              <span className="text-sm text-gray-400">/5</span>
-                            </div>
-                            {bookDetails.ratings_count && (
-                              <span className="text-sm text-gray-400">({bookDetails.ratings_count.toLocaleString()} ratings)</span>
-                            )}
-                          </div>
-                        )}
-                        
-                        <div className="flex flex-wrap gap-3 text-sm">
-                          {bookDetails.published_date && (
-                            <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                              📅 {bookDetails.published_date.substring(0, 4)}
-                            </span>
-                          )}
-                          {bookDetails.page_count && (
-                            <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                              📄 {bookDetails.page_count} pages
-                            </span>
-                          )}
-                          {bookDetails.publisher && (
-                            <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                              🏢 {bookDetails.publisher}
-                            </span>
-                          )}
-                        </div>
-                        
-                        {bookDetails.categories && bookDetails.categories.length > 0 && (
-                          <div>
-                            <h3 className="text-sm font-semibold text-gray-400 mb-2">Genres</h3>
-                            <div className="flex flex-wrap gap-2">
-                              {bookDetails.categories.slice(0, 5).map((cat: string, idx: number) => (
-                                <span key={idx} className="text-xs bg-pink-500/20 text-pink-300 px-2 py-1 rounded-full">
-                                  {cat}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-400 mb-2">Summary</h3>
-                          <div className="text-gray-300 leading-relaxed text-sm whitespace-pre-wrap max-h-96 overflow-y-auto pr-2">
-                            {bookDetails.description && bookDetails.description !== 'No description available.' ? (
-                              <p>{bookDetails.description}</p>
-                            ) : (
-                              <p className="text-gray-500 italic">No summary available for this book.</p>
-                            )}
-                          </div>
-                        </div>
-                        
-                        {bookDetails.first_sentence && bookDetails.first_sentence[0] && (
-                          <div className="bg-purple-950/30 border-l-4 border-pink-500 p-4 rounded-r-lg">
-                            <p className="text-gray-400 italic text-sm">
-                              "{bookDetails.first_sentence[0]}"
-                            </p>
-                          </div>
-                        )}
-                        
-                        <div className="text-xs text-gray-500 pt-4 border-t border-purple-900/50">
-                          Source: {bookDetails.source || 'Google Books'}
-                        </div>
+                      <div className="text-xs text-gray-500 pt-4 border-t border-purple-900/50">
+                        DRPA Powered Discovery | Source: {bookDetails.source || 'Goodreads Database'} | 6.3M+ books
                       </div>
                     </div>
                   </div>
-                </>
+                </div>
               )}
             </motion.div>
           </motion.div>
