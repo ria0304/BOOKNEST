@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BarChart3, PieChart, TrendingUp, BookOpen, Clock, Star, Brain, Sparkles, Compass, Plus, Check, Zap } from 'lucide-react';
+import { BarChart3, PieChart, TrendingUp, BookOpen, Clock, Star, Brain, Sparkles, Compass, Plus, Check, Zap, Calendar, TrendingDown, Lightbulb } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { Link } from 'react-router-dom';
 
@@ -50,17 +50,119 @@ function MoodPicker({ onMoodSelect, currentMood }: { onMoodSelect: (mood: string
   );
 }
 
+// Monthly Books Activity Calendar Component
+function MonthlyBooksCalendar({ monthlyData, year, onYearChange }: { monthlyData: any[], year: number, onYearChange: (year: number) => void }) {
+  const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
+  
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  const getIntensityColor = (booksCompleted: number) => {
+    if (booksCompleted === 0) return 'bg-gray-800/30';
+    if (booksCompleted === 1) return 'bg-green-900/50';
+    if (booksCompleted === 2) return 'bg-green-700/60';
+    if (booksCompleted === 3) return 'bg-green-500/70';
+    return 'bg-green-400/90';
+  };
+  
+  const getMonthData = (month: number) => {
+    return monthlyData.find(m => m.month === month + 1) || {
+      month: month + 1,
+      books_completed: 0,
+      books_added: 0,
+      reading_sessions: 0,
+      reading_days: 0
+    };
+  };
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onYearChange(year - 1)}
+            className="px-3 py-1 bg-purple-900/50 rounded-lg text-sm hover:bg-purple-800/70 transition-colors"
+          >
+            ← {year - 1}
+          </button>
+          <span className="text-xl font-bold text-white">{year}</span>
+          <button
+            onClick={() => onYearChange(year + 1)}
+            className="px-3 py-1 bg-purple-900/50 rounded-lg text-sm hover:bg-purple-800/70 transition-colors"
+          >
+            {year + 1} →
+          </button>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <span>Less</span>
+          <div className="flex gap-1">
+            <div className="w-3 h-3 rounded-sm bg-gray-800/30"></div>
+            <div className="w-3 h-3 rounded-sm bg-green-900/50"></div>
+            <div className="w-3 h-3 rounded-sm bg-green-700/60"></div>
+            <div className="w-3 h-3 rounded-sm bg-green-500/70"></div>
+            <div className="w-3 h-3 rounded-sm bg-green-400/90"></div>
+          </div>
+          <span>More books</span>
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+        {monthNames.map((month, idx) => {
+          const data = getMonthData(idx);
+          const intensityColor = getIntensityColor(data.books_completed);
+          const isHovered = hoveredMonth === idx;
+          
+          return (
+            <div
+              key={idx}
+              className={`relative rounded-xl p-4 transition-all cursor-pointer transform hover:scale-105 ${
+                intensityColor
+              } border border-purple-800/30 hover:border-pink-500/50`}
+              onMouseEnter={() => setHoveredMonth(idx)}
+              onMouseLeave={() => setHoveredMonth(null)}
+            >
+              <h4 className="text-sm font-semibold text-white mb-2">{month}</h4>
+              <div className="space-y-1">
+                <p className="text-xl font-bold text-white">{data.books_completed}</p>
+                <p className="text-xs text-gray-400">books read</p>
+              </div>
+              
+              {/* Tooltip on hover */}
+              {isHovered && (
+                <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 z-10 w-56 bg-gray-900 rounded-lg p-3 shadow-xl border border-purple-800/50">
+                  <p className="text-xs font-semibold text-white mb-2">{month} {year}</p>
+                  <div className="space-y-1 text-xs">
+                    <p className="text-gray-300">✅ <span className="text-white font-medium">{data.books_completed}</span> books completed</p>
+                    <p className="text-gray-300">➕ <span className="text-white font-medium">{data.books_added}</span> books added</p>
+                    <p className="text-gray-300">📚 <span className="text-white font-medium">{data.reading_sessions}</span> reading sessions</p>
+                    <p className="text-gray-300">📅 <span className="text-white font-medium">{data.reading_days}</span> days with reading</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      
+      <p className="text-xs text-gray-500 mt-6 text-center">
+        Each card shows number of books completed per month. Hover to see detailed monthly statistics.
+      </p>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [drpa, setDrpa] = useState<any>(null);
   const [moodRecs, setMoodRecs] = useState<any>(null);
-  const [readingAnalytics, setReadingAnalytics] = useState<any>(null);
-  const [recAnalytics, setRecAnalytics] = useState<any>(null);
+  const [monthlyData, setMonthlyData] = useState<any[]>([]);
+  const [monthlySummary, setMonthlySummary] = useState<any>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [updatingObsession, setUpdatingObsession] = useState(false);
   const [addedBooks, setAddedBooks] = useState<Set<string>>(new Set());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loggingMood, setLoggingMood] = useState(false);
+  const [activityYear, setActivityYear] = useState<number>(new Date().getFullYear());
 
   const obsessionOptions = [
     'Dark Romance',
@@ -83,22 +185,23 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [activityYear]);
 
   const fetchData = async () => {
     try {
-      const [analyticsData, drpaData, moodData, readingData, recData] = await Promise.all([
+      const [analyticsData, drpaData, moodData, monthlyActivity, aiData] = await Promise.all([
         apiFetch('/api/analytics'),
         apiFetch('/api/recommendations/drpa'),
         apiFetch('/api/recommendations/mood'),
-        apiFetch('/api/reading/analytics'),
-        apiFetch('/api/recommendations/analytics')
+        apiFetch(`/api/reading/monthly-books?year=${activityYear}`),
+        apiFetch('/api/ai/suggestions')
       ]);
       setAnalytics(analyticsData);
       setDrpa(drpaData);
       setMoodRecs(moodData);
-      setReadingAnalytics(readingData);
-      setRecAnalytics(recData);
+      setMonthlyData(monthlyActivity?.monthlyData || []);
+      setMonthlySummary(monthlyActivity?.summary || null);
+      setAiSuggestions(aiData?.suggestions || []);
     } catch (error) {
       console.error('Failed to fetch dashboard data', error);
     } finally {
@@ -153,16 +256,6 @@ export default function Dashboard() {
         })
       });
       setAddedBooks(prev => new Set(prev).add(book.key));
-      
-      // Track recommendation feedback
-      await apiFetch('/api/recommendations/feedback', {
-        method: 'POST',
-        body: JSON.stringify({
-          book_id: book.key,
-          recommended_by: 'drpa',
-          clicked: true
-        })
-      });
       
       setErrorMsg(`"${book.title}" added to your library!`);
       setTimeout(() => setErrorMsg(null), 3000);
@@ -247,6 +340,87 @@ export default function Dashboard() {
           </div>
         </motion.div>
       </div>
+
+      {/* AI-Powered Suggestions Section */}
+      {aiSuggestions && aiSuggestions.length > 0 && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.23 }}
+          className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 border border-purple-500/50 p-8 rounded-2xl mb-12"
+        >
+          <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
+            <Lightbulb className="w-5 h-5 mr-2 text-amber-400" /> AI-Powered Suggestions
+          </h3>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {aiSuggestions.map((suggestion, idx) => (
+              <div key={idx} className="bg-black/40 rounded-xl p-4 border border-purple-700/50 hover:border-pink-500/70 transition-all group">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-2xl">{suggestion.icon}</span>
+                  <h4 className="font-semibold text-white">{suggestion.title}</h4>
+                </div>
+                <p className="text-sm text-gray-300 mb-3">{suggestion.description}</p>
+                <Link 
+                  to={`/search?q=${encodeURIComponent(suggestion.value || suggestion.title)}`}
+                  className="text-xs text-pink-400 hover:text-pink-300 transition-colors flex items-center gap-1"
+                >
+                  <span>Explore</span>
+                  <span>→</span>
+                </Link>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      )}
+
+      {/* Monthly Books Activity Calendar */}
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+        className="bg-purple-950/20 border border-purple-900/50 p-8 rounded-2xl mb-12"
+      >
+        <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
+          <Calendar className="w-5 h-5 mr-2 text-pink-400" /> Reading Activity by Month
+        </h3>
+        
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksCompleted || 0}</p>
+            <p className="text-xs text-gray-400">Books Read</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksAdded || 0}</p>
+            <p className="text-xs text-gray-400">Books Added</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalReadingSessions || 0}</p>
+            <p className="text-xs text-gray-400">Reading Sessions</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalReadingDays || 0}</p>
+            <p className="text-xs text-gray-400">Days Read</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalBooksCompleted > 0 ? Math.round((monthlySummary?.totalBooksCompleted || 0) / 12) : 0}</p>
+            <p className="text-xs text-gray-400">Avg Books/Month</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-3 text-center">
+            <p className="text-lg font-bold text-white">{monthlySummary?.totalReadingDays > 0 && monthlySummary?.totalBooksCompleted > 0 ? Math.round((monthlySummary?.totalReadingDays || 0) / (monthlySummary?.totalBooksCompleted || 1)) : 0}</p>
+            <p className="text-xs text-gray-400">Days per Book</p>
+          </div>
+        </div>
+        
+        <MonthlyBooksCalendar 
+          monthlyData={monthlyData} 
+          year={activityYear}
+          onYearChange={(year) => {
+            setActivityYear(year);
+            setLoading(true);
+          }}
+        />
+      </motion.div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
         <motion.div 
@@ -372,94 +546,11 @@ export default function Dashboard() {
         </motion.div>
       </div>
 
-      {/* Reading Analytics Section */}
-      {readingAnalytics && readingAnalytics.sessions && readingAnalytics.sessions.length > 0 && (
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.65 }}
-          className="bg-purple-950/20 border border-purple-900/50 p-8 rounded-2xl mb-12"
-        >
-          <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
-            <Clock className="w-5 h-5 mr-2 text-pink-400" /> Reading Analytics
-          </h3>
-          
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="bg-purple-900/30 rounded-xl p-4 text-center">
-              <p className="text-2xl font-bold text-white">{readingAnalytics.sessions.length}</p>
-              <p className="text-xs text-gray-400">Reading Sessions</p>
-            </div>
-            <div className="bg-purple-900/30 rounded-xl p-4 text-center">
-              <p className="text-2xl font-bold text-white">
-                {Math.round(readingAnalytics.sessions.reduce((acc: number, s: any) => acc + (s.avg_speed || 0), 0) / readingAnalytics.sessions.length)}
-              </p>
-              <p className="text-xs text-gray-400">Avg Pages/Min</p>
-            </div>
-            <div className="bg-purple-900/30 rounded-xl p-4 text-center">
-              <p className="text-2xl font-bold text-white">
-                {readingAnalytics.sessions.reduce((acc: number, s: any) => acc + (s.total_pages || 0), 0)}
-              </p>
-              <p className="text-xs text-gray-400">Total Pages Read</p>
-            </div>
-            <div className="bg-purple-900/30 rounded-xl p-4 text-center">
-              <p className="text-2xl font-bold text-white">{readingAnalytics.moodChanges?.length || 0}</p>
-              <p className="text-xs text-gray-400">Mood Changes</p>
-            </div>
-          </div>
-          
-          {readingAnalytics.moodChanges && readingAnalytics.moodChanges.length > 0 && (
-            <div>
-              <p className="text-sm text-gray-400 mb-3">How reading affects your mood</p>
-              <div className="space-y-2">
-                {readingAnalytics.moodChanges.slice(0, 5).map((change: any, idx: number) => (
-                  <div key={idx} className="bg-black/30 rounded-lg p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-2xl">{change.mood_before}</span>
-                      <span className="text-gray-400">→</span>
-                      <span className="text-2xl">{change.mood_after}</span>
-                    </div>
-                    <span className="text-sm text-gray-400">{change.count} times</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </motion.div>
-      )}
-
-      {/* Recommendation Analytics */}
-      {recAnalytics && recAnalytics.length > 0 && (
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.7 }}
-          className="bg-purple-950/20 border border-purple-900/50 p-8 rounded-2xl mb-12"
-        >
-          <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
-            <Star className="w-5 h-5 mr-2 text-amber-400" /> DRPA Performance
-          </h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {recAnalytics.map((rec: any) => (
-              <div key={rec.recommended_by} className="bg-black/30 rounded-xl p-4">
-                <p className="text-sm text-gray-400 mb-1">Recommendation Type</p>
-                <p className="text-lg font-semibold text-white capitalize">{rec.recommended_by}</p>
-                <div className="mt-3 space-y-1">
-                  <p className="text-xs text-gray-400">Click Rate: <span className="text-green-400">{((rec.clicks / rec.total_recommendations) * 100).toFixed(1)}%</span></p>
-                  <p className="text-xs text-gray-400">Total: {rec.total_recommendations}</p>
-                  {rec.avg_rating && <p className="text-xs text-gray-400">Avg Rating: <span className="text-amber-400">{rec.avg_rating.toFixed(1)}⭐</span></p>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-      )}
-
       {drpa?.recommendations && drpa.recommendations.length > 0 && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.75 }}
+          transition={{ delay: 0.7 }}
           className="bg-purple-950/20 border border-purple-900/50 p-8 rounded-2xl mb-12"
         >
           <h3 className="text-xl font-semibold text-white mb-6 flex items-center">
