@@ -51,7 +51,7 @@ export default function Auth() {
         </div>
         
         <h2 className="text-3xl font-bold text-center mb-2 text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">
-          Book Haven
+          Booknest
         </h2>
         <p className="text-center text-gray-400 mb-8 font-medium">
           {isLogin ? 'Welcome back to your library' : 'Begin your reading journey'}
