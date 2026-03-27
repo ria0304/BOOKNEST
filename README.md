@@ -1,4 +1,4 @@
-📚 Book Haven+
+📚 Booknest+
 🌟 Overview
 
 Book Haven+ is a full-stack reading platform designed to help users discover, track, and manage books while receiving personalized recommendations based on their reading behavior, mood, and preferences.
