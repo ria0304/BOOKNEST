@@ -22,7 +22,7 @@ export default function Navbar() {
             <Link to="/" className="flex items-center space-x-2 group">
               <BookOpen className="h-8 w-8 text-pink-500 group-hover:text-pink-400 transition-colors" />
               <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400">
-                Book Haven
+                Booknest
               </span>
             </Link>
           </div>
