@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, Plus, Check, ExternalLink, BookOpen, X, Star, Info, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../lib/api';
@@ -25,14 +26,12 @@ interface BookResult {
 // Helper function to strip HTML tags
 const stripHtml = (html: string): string => {
   if (!html) return '';
-  
   let text = html.replace(/<br\s*\/?>/gi, '\n');
   text = text.replace(/<\/p>/gi, '\n');
   text = text.replace(/<p[^>]*>/gi, '');
   text = text.replace(/<\/div>/gi, '\n');
   text = text.replace(/<div[^>]*>/gi, '');
   text = text.replace(/<[^>]*>/g, '');
-  
   text = text
     .replace(/&quot;/g, '"')
     .replace(/&amp;/g, '&')
@@ -46,15 +45,11 @@ const stripHtml = (html: string): string => {
     .replace(/&mdash;/g, '—')
     .replace(/&ndash;/g, '–')
     .replace(/&hellip;/g, '...');
-  
   text = text.replace(/\n\s*\n/g, '\n\n');
   text = text.replace(/[ \t]+/g, ' ');
-  text = text.trim();
-  
-  return text;
+  return text.trim();
 };
 
-// Helper function to detect English text
 const isEnglishText = (text: string): boolean => {
   if (!text) return false;
   const englishPattern = /[a-zA-Z\s.,!?;:'"()\-]/g;
@@ -64,7 +59,6 @@ const isEnglishText = (text: string): boolean => {
   return ratio > 0.6;
 };
 
-// Function to check if text is likely non-English
 const isNonEnglish = (text: string): boolean => {
   if (!text) return true;
   const nonEnglishPatterns = /[äöüßÄÖÜéèêëàâçîïôûùÿÉÈÊËÀÂÇÎÏÔÛÙŸáéíóúñÁÉÍÓÚÑа-яА-Я\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/;
@@ -72,7 +66,10 @@ const isNonEnglish = (text: string): boolean => {
 };
 
 export default function Search() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [query, setQuery] = useState('');
+  const [searchType, setSearchType] = useState<'all' | 'book' | 'author' | 'genre'>('all');
   const [results, setResults] = useState<BookResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchAttempted, setSearchAttempted] = useState(false);
@@ -83,114 +80,81 @@ export default function Search() {
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [activeSource, setActiveSource] = useState<string>('goodreads');
 
+  // Read query and type from URL on mount and when URL changes
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const q = params.get('q');
+    const type = params.get('type') as 'all' | 'book' | 'author' | 'genre' | null;
+    if (q) {
+      setQuery(q);
+      if (type && ['all', 'book', 'author', 'genre'].includes(type)) {
+        setSearchType(type);
+      }
+      // Auto‑search after a short delay (to let state update)
+      setTimeout(() => {
+        searchBooks({ preventDefault: () => {} } as React.FormEvent);
+      }, 100);
+    }
+  }, [location.search]);
+
   const searchBooks = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query) return;
-    
+
+    // Update URL with query and type
+    const params = new URLSearchParams();
+    params.set('q', query);
+    if (searchType !== 'all') params.set('type', searchType);
+    navigate(`/search?${params.toString()}`, { replace: true });
+
     setLoading(true);
     setErrorMsg(null);
     setSearchAttempted(true);
     setResults([]);
-    
+
     try {
       let allResults: BookResult[] = [];
-      
-      // PRIORITY 1: Goodreads
+
       if (activeSource === 'goodreads' || activeSource === 'all') {
         try {
-          console.log(`Searching Goodreads for: ${query}`);
-          const goodreadsResponse = await apiFetch(`/api/books/goodreads-search?q=${encodeURIComponent(query)}&limit=20`);
-          
-          console.log('Goodreads response:', goodreadsResponse);
-          
-          if (goodreadsResponse.success && goodreadsResponse.results && goodreadsResponse.results.length > 0) {
-            const cleanedResults = goodreadsResponse.results.map((book: BookResult) => {
-              let description = book.description || '';
-              if (description && description !== 'No summary available') {
-                description = stripHtml(description);
-                if (isNonEnglish(description) || !isEnglishText(description)) {
-                  description = '';
-                }
-              }
-              return {
-                ...book,
-                description: description || (book.source === 'Goodreads' ? 'No summary available' : ''),
-                author_name: book.author_name || [book.author || 'Unknown'],
-                author: book.author || (book.author_name ? book.author_name[0] : 'Unknown'),
-                source: 'Goodreads',
-                rating: book.rating,
-                ratings_count: book.ratings_count
-              };
-            });
-            allResults = [...allResults, ...cleanedResults];
-            console.log(`Found ${cleanedResults.length} Goodreads results`);
-          } else {
-            console.log('No Goodreads results or error:', goodreadsResponse.message);
+          const url = `/api/books/goodreads-search?q=${encodeURIComponent(query)}&limit=50&type=${searchType}`;
+          const response = await apiFetch(url);
+          if (response.success && response.results) {
+            const cleaned = response.results.map((book: BookResult) => ({
+              ...book,
+              description: book.description && book.description !== 'No summary available'
+                ? stripHtml(book.description)
+                : '',
+              author_name: book.author_name || [book.author || 'Unknown'],
+              source: 'Goodreads',
+            }));
+            allResults = cleaned;
           }
-        } catch (error) {
-          console.error('Goodreads search error:', error);
-          setErrorMsg('Goodreads search failed. Trying other sources...');
+        } catch (err) {
+          console.error('Goodreads search error:', err);
         }
       }
-      
-      // PRIORITY 2: Google Books
-      if ((allResults.length === 0 || activeSource === 'all') && (activeSource === 'google' || activeSource === 'all')) {
+
+      if (allResults.length === 0 && (activeSource === 'all' || activeSource === 'google' || activeSource === 'openlibrary')) {
         try {
-          console.log(`Searching Google Books for: ${query}`);
-          const googleResponse = await apiFetch(`/api/books/search?q=${encodeURIComponent(query)}&source=google`);
-          
-          if (googleResponse.success && googleResponse.results && googleResponse.results.length > 0) {
-            const googleResults = googleResponse.results.map((book: BookResult) => ({
+          const fallbackUrl = `/api/books/search?q=${encodeURIComponent(query)}&source=${activeSource === 'all' ? 'all' : activeSource}`;
+          const fallbackResponse = await apiFetch(fallbackUrl);
+          if (fallbackResponse.success && fallbackResponse.results) {
+            const fallbackResults = fallbackResponse.results.map((book: BookResult) => ({
               ...book,
               description: book.description ? stripHtml(book.description) : '',
               author_name: book.author_name || [book.author || 'Unknown'],
-              source: 'Google Books'
             }));
-            
-            if (allResults.length === 0) {
-              allResults = [...allResults, ...googleResults];
-              console.log(`Found ${googleResults.length} Google Books results`);
-            }
+            allResults = fallbackResults;
           }
-        } catch (error) {
-          console.error('Google Books error:', error);
+        } catch (err) {
+          console.error('Fallback search error:', err);
         }
       }
-      
-      // PRIORITY 3: Open Library
-      if (allResults.length === 0 && (activeSource === 'openlibrary' || activeSource === 'all')) {
-        try {
-          console.log(`Searching Open Library for: ${query}`);
-          const openLibResponse = await apiFetch(`/api/books/search?q=${encodeURIComponent(query)}&source=openlibrary`);
-          
-          if (openLibResponse.success && openLibResponse.results && openLibResponse.results.length > 0) {
-            const openLibResults = openLibResponse.results.map((book: BookResult) => ({
-              ...book,
-              description: book.description ? stripHtml(book.description) : '',
-              author_name: book.author_name || [book.author || 'Unknown'],
-              source: 'Open Library'
-            }));
-            allResults = [...allResults, ...openLibResults];
-            console.log(`Found ${openLibResults.length} Open Library results`);
-          }
-        } catch (error) {
-          console.error('Open Library error:', error);
-        }
-      }
-      
-      // Deduplicate by title
-      const seenTitles = new Set();
-      const deduplicated = allResults.filter(book => {
-        const titleLower = book.title?.toLowerCase() || '';
-        if (seenTitles.has(titleLower)) return false;
-        seenTitles.add(titleLower);
-        return true;
-      });
-      
-      setResults(deduplicated);
-      
-      if (deduplicated.length === 0 && searchAttempted) {
-        setErrorMsg('No books found. Try a different search term.');
+
+      setResults(allResults);
+      if (allResults.length === 0 && searchAttempted) {
+        setErrorMsg('No books found. Try a different search term or source.');
         setTimeout(() => setErrorMsg(null), 3000);
       }
     } catch (error) {
@@ -211,11 +175,9 @@ export default function Search() {
         if (response.success && response.details) {
           let fullDescription = response.details.volumeInfo.description || book.description || '';
           fullDescription = stripHtml(fullDescription);
-          
           if (fullDescription && (isNonEnglish(fullDescription) || !isEnglishText(fullDescription))) {
             fullDescription = '';
           }
-          
           setBookDetails({
             ...book,
             description: fullDescription || 'No description available.',
@@ -226,7 +188,7 @@ export default function Search() {
             categories: response.details.volumeInfo.categories,
             preview_link: response.details.volumeInfo.previewLink,
             read_link: response.details.volumeInfo.infoLink,
-            publisher: response.details.volumeInfo.publisher
+            publisher: response.details.volumeInfo.publisher,
           });
         } else {
           setBookDetails(book);
@@ -252,11 +214,10 @@ export default function Search() {
           author: book.author_name?.[0] || book.author || 'Unknown Author',
           cover_url: book.cover_url || '',
           open_library_id: book.key,
-          status: 'want_to_read'
-        })
+          status: 'want_to_read',
+        }),
       });
       setAddedBooks(prev => new Set(prev).add(book.key));
-      
       setErrorMsg(`"${book.title}" added to your library!`);
       setTimeout(() => setErrorMsg(null), 3000);
     } catch (error: any) {
@@ -273,7 +234,14 @@ export default function Search() {
   const sources = [
     { id: 'goodreads', label: 'Goodreads', icon: '⭐', description: '6.3M+ books with summaries' },
     { id: 'google', label: 'Google Books', icon: '📚', description: 'Preview available' },
-    { id: 'openlibrary', label: 'Open Library', icon: '📖', description: 'Free public domain' }
+    { id: 'openlibrary', label: 'Open Library', icon: '📖', description: 'Free public domain' },
+  ];
+
+  const searchTypes = [
+    { value: 'all', label: 'All', icon: '🔍' },
+    { value: 'book', label: 'Book', icon: '📖' },
+    { value: 'author', label: 'Author', icon: '✍️' },
+    { value: 'genre', label: 'Genre', icon: '🎭' },
   ];
 
   return (
@@ -282,7 +250,8 @@ export default function Search() {
         <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-400 mb-4">
           Discover New Worlds
         </h1>
-        {/* Removed the two lines as requested */}
+        <p className="text-gray-400">Search 6.3 million books with summaries from Goodreads</p>
+        <p className="text-xs text-gray-500 mt-2">Powered by DRPA - Dynamic Reading Preference Algorithm</p>
       </div>
 
       {/* Source Selector */}
@@ -306,7 +275,7 @@ export default function Search() {
 
       {errorMsg && (
         <div className={`max-w-2xl mx-auto mb-6 px-4 py-3 rounded-lg text-center ${
-          errorMsg.includes('added') 
+          errorMsg.includes('added')
             ? 'bg-green-900/50 border border-green-500/50 text-green-200'
             : errorMsg.includes('No books found')
             ? 'bg-yellow-900/50 border border-yellow-500/50 text-yellow-200'
@@ -317,7 +286,7 @@ export default function Search() {
         </div>
       )}
 
-      <form onSubmit={searchBooks} className="relative max-w-2xl mx-auto mb-12">
+      <form onSubmit={searchBooks} className="relative max-w-2xl mx-auto mb-6">
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-purple-600 to-pink-600 rounded-full blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
           <input
@@ -328,7 +297,7 @@ export default function Search() {
             className="relative w-full bg-black border border-purple-900/50 rounded-full py-4 pl-12 pr-4 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-pink-500/50 transition-all"
           />
           <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-          <button 
+          <button
             type="submit"
             disabled={loading}
             className="absolute right-2 top-1/2 -translate-y-1/2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-2 rounded-full font-medium hover:from-purple-500 hover:to-pink-500 transition-all disabled:opacity-50"
@@ -337,6 +306,24 @@ export default function Search() {
           </button>
         </div>
       </form>
+
+      {/* Search Type Selector */}
+      <div className="flex justify-center gap-2 mb-8">
+        {searchTypes.map(type => (
+          <button
+            key={type.value}
+            onClick={() => setSearchType(type.value as typeof searchType)}
+            className={`px-4 py-2 rounded-full text-sm font-medium transition-all flex items-center gap-1 ${
+              searchType === type.value
+                ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
+                : 'bg-purple-900/30 text-gray-300 hover:bg-purple-900/50'
+            }`}
+          >
+            <span>{type.icon}</span>
+            <span>{type.label}</span>
+          </button>
+        ))}
+      </div>
 
       {loading && (
         <div className="flex justify-center py-20">
@@ -347,7 +334,7 @@ export default function Search() {
       {!loading && searchAttempted && results.length === 0 && (
         <div className="text-center py-20">
           <p className="text-gray-400">No books found. Try a different search term or source.</p>
-          <p className="text-xs text-gray-500 mt-2">Tip: Try searching for popular books like "Harry Potter" or "The Great Gatsby"</p>
+          <p className="text-xs text-gray-500 mt-2">Tip: Try selecting a specific search type (Book, Author, Genre) to refine your results.</p>
         </div>
       )}
 
@@ -361,40 +348,37 @@ export default function Search() {
             className="bg-purple-950/20 border border-purple-900/50 rounded-xl overflow-hidden hover:border-pink-500/50 transition-all group flex flex-col cursor-pointer"
             onClick={() => fetchBookDetails(book)}
           >
+            {/* Same card JSX as before – unchanged */}
             <div className="aspect-[2/3] bg-purple-900/20 relative overflow-hidden">
               {book.cover_url ? (
-                <img 
-                  src={book.cover_url} 
+                <img
+                  src={book.cover_url}
                   alt={book.title}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                   referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = '';
-                  }}
+                  onError={(e) => { (e.target as HTMLImageElement).src = ''; }}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-purple-700">
                   <BookOpen className="w-12 h-12 opacity-50" />
                 </div>
               )}
-              
-              {/* Source Badge */}
+
               <div className="absolute top-3 right-3 bg-black/70 backdrop-blur-sm rounded-full px-2 py-1">
                 <span className="text-xs text-white">
                   {book.source === 'Goodreads' ? '⭐' : book.source === 'Google Books' ? '📚' : '📖'}
                 </span>
               </div>
-              
-              {/* Rating Badge */}
+
               {book.rating && (
                 <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-sm rounded-full px-2 py-1 flex items-center space-x-1">
                   <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
                   <span className="text-xs text-white font-medium">{book.rating.toFixed(1)}</span>
                 </div>
               )}
-              
+
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-between p-4">
-                <a 
+                <a
                   href={book.url || `https://books.google.com/books?id=${book.key}`}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -414,38 +398,28 @@ export default function Search() {
                 </button>
               </div>
             </div>
-            
+
             <div className="p-4 flex-1 flex flex-col">
               <h3 className="font-semibold text-white line-clamp-2 mb-1">{book.title}</h3>
               <p className="text-sm text-gray-400 line-clamp-1 mb-2">
                 {book.author_name?.[0] || book.author || 'Unknown Author'}
               </p>
-              
               {book.published_date && (
-                <p className="text-xs text-gray-500 mb-2">
-                  {book.published_date.substring(0, 4)}
-                </p>
+                <p className="text-xs text-gray-500 mb-2">{book.published_date.substring(0, 4)}</p>
               )}
-              
               {book.description && book.description !== 'No summary available' && (
                 <p className="text-xs text-gray-500 line-clamp-3 mb-4 flex-1">
                   {book.description.length > 120 ? `${book.description.substring(0, 120)}...` : book.description}
                 </p>
               )}
               {book.source === 'Goodreads' && (!book.description || book.description === 'No summary available') && (
-                <p className="text-xs text-amber-500 italic line-clamp-2 mb-4 flex-1">
-                  ⭐ Goodreads summary available
-                </p>
+                <p className="text-xs text-amber-500 italic line-clamp-2 mb-4 flex-1">⭐ Goodreads summary available</p>
               )}
               {!book.description && book.first_sentence && book.first_sentence[0] && (
-                <p className="text-xs text-gray-500 italic line-clamp-2 mb-4 flex-1">
-                  "{book.first_sentence[0]}"
-                </p>
+                <p className="text-xs text-gray-500 italic line-clamp-2 mb-4 flex-1">"{book.first_sentence[0]}"</p>
               )}
-              {!book.description && !book.first_sentence && book.source !== 'Goodreads' && (
-                <div className="flex-1 mb-4"></div>
-              )}
-              
+              {!book.description && !book.first_sentence && book.source !== 'Goodreads' && <div className="flex-1 mb-4"></div>}
+
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -469,10 +443,10 @@ export default function Search() {
         ))}
       </div>
 
-      {/* Book Details Modal */}
+      {/* Book Details Modal (unchanged – same as before) */}
       <AnimatePresence>
         {selectedBook && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -482,7 +456,7 @@ export default function Search() {
               setBookDetails(null);
             }}
           >
-            <motion.div 
+            <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
@@ -504,13 +478,12 @@ export default function Search() {
                   >
                     <X className="w-5 h-5 text-white" />
                   </button>
-                  
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-6">
                     <div className="md:col-span-1">
                       <div className="aspect-[2/3] rounded-xl overflow-hidden border border-purple-900/50 shadow-xl">
                         {bookDetails.cover_url ? (
-                          <img 
-                            src={bookDetails.cover_url.replace('zoom=1', 'zoom=2')} 
+                          <img
+                            src={bookDetails.cover_url.replace('zoom=1', 'zoom=2')}
                             alt={bookDetails.title}
                             className="w-full h-full object-cover"
                             referrerPolicy="no-referrer"
@@ -521,7 +494,6 @@ export default function Search() {
                           </div>
                         )}
                       </div>
-                      
                       <div className="mt-4 space-y-2">
                         <button
                           onClick={() => addToLibrary(bookDetails)}
@@ -538,7 +510,6 @@ export default function Search() {
                             <><Plus className="w-4 h-4" /> <span>Add to My Library</span></>
                           )}
                         </button>
-                        
                         {bookDetails.preview_link && (
                           <a
                             href={bookDetails.preview_link}
@@ -550,7 +521,6 @@ export default function Search() {
                             <span>Preview Book</span>
                           </a>
                         )}
-                        
                         {bookDetails.url && (
                           <a
                             href={bookDetails.url}
@@ -564,16 +534,12 @@ export default function Search() {
                         )}
                       </div>
                     </div>
-                    
                     <div className="md:col-span-2 space-y-4">
                       <h2 className="text-2xl md:text-3xl font-bold text-white">{bookDetails.title}</h2>
                       <p className="text-lg text-gray-400">{bookDetails.author_name?.[0] || bookDetails.author || 'Unknown Author'}</p>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs bg-purple-900/50 px-2 py-1 rounded-full">
-                          {bookDetails.source || 'Unknown Source'}
-                        </span>
+                        <span className="text-xs bg-purple-900/50 px-2 py-1 rounded-full">{bookDetails.source || 'Unknown Source'}</span>
                       </div>
-                      
                       {bookDetails.rating && (
                         <div className="flex items-center space-x-4 py-2">
                           <div className="flex items-center space-x-1">
@@ -586,38 +552,27 @@ export default function Search() {
                           )}
                         </div>
                       )}
-                      
                       <div className="flex flex-wrap gap-3 text-sm">
                         {bookDetails.published_date && (
-                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                            📅 {bookDetails.published_date.substring(0, 4)}
-                          </span>
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">📅 {bookDetails.published_date.substring(0, 4)}</span>
                         )}
                         {bookDetails.page_count && (
-                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                            📄 {bookDetails.page_count} pages
-                          </span>
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">📄 {bookDetails.page_count} pages</span>
                         )}
                         {bookDetails.publisher && (
-                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">
-                            🏢 {bookDetails.publisher}
-                          </span>
+                          <span className="bg-purple-900/30 px-3 py-1 rounded-full text-gray-300">🏢 {bookDetails.publisher}</span>
                         )}
                       </div>
-                      
                       {bookDetails.categories && bookDetails.categories.length > 0 && (
                         <div>
                           <h3 className="text-sm font-semibold text-gray-400 mb-2">Genres</h3>
                           <div className="flex flex-wrap gap-2">
                             {bookDetails.categories.slice(0, 5).map((cat: string, idx: number) => (
-                              <span key={idx} className="text-xs bg-pink-500/20 text-pink-300 px-2 py-1 rounded-full">
-                                {cat}
-                              </span>
+                              <span key={idx} className="text-xs bg-pink-500/20 text-pink-300 px-2 py-1 rounded-full">{cat}</span>
                             ))}
                           </div>
                         </div>
                       )}
-                      
                       <div>
                         <h3 className="text-sm font-semibold text-gray-400 mb-2">Summary</h3>
                         <div className="text-gray-300 leading-relaxed text-sm whitespace-pre-wrap max-h-96 overflow-y-auto pr-2">
@@ -628,7 +583,6 @@ export default function Search() {
                           )}
                         </div>
                       </div>
-                      
                       <div className="text-xs text-gray-500 pt-4 border-t border-purple-900/50">
                         DRPA Powered Discovery | Source: {bookDetails.source || 'Goodreads Database'} | 6.3M+ books
                       </div>
